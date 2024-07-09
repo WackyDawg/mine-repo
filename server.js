@@ -12,7 +12,7 @@ const fetch = require('node-fetch');
 dotenv.config();
 
 const app = express();
-const bot = new Eris(process.env.DISCORD_BOT_TOKEN);
+const bot = new Eris(process.env.TOKEN);
 const botId = process.env.BOT_ID;
 
 function delay(time) {
